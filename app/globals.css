@@ -71,6 +71,90 @@ body {
   padding: 0 16px 160px;
 }
 
+/* ── Desktop & Tablet Responsive ───────────────────────── */
+@media (min-width: 768px) {
+  body {
+    background: linear-gradient(135deg, #E8E6FF 0%, #F4F3FF 40%, #EAF0FF 100%);
+    display: flex;
+    justify-content: center;
+    position: relative;
+  }
+
+  /* Decorative background orbs */
+  body::before,
+  body::after {
+    content: '';
+    position: fixed;
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  body::before {
+    width: 500px;
+    height: 500px;
+    background: radial-gradient(circle, rgba(123, 97, 255, 0.10) 0%, transparent 70%);
+    top: -100px;
+    right: calc(50% + 300px);
+  }
+
+  body::after {
+    width: 400px;
+    height: 400px;
+    background: radial-gradient(circle, rgba(79, 195, 247, 0.08) 0%, transparent 70%);
+    bottom: -80px;
+    left: calc(50% + 280px);
+  }
+
+  .app {
+    width: 420px;
+    min-height: 100dvh;
+    max-width: 420px;
+    box-shadow:
+      0 0 0 1px rgba(123, 97, 255, 0.08),
+      0 8px 48px rgba(123, 97, 255, 0.12),
+      0 32px 80px rgba(0, 0, 0, 0.08);
+    position: relative;
+    z-index: 1;
+    overflow: hidden;
+  }
+
+  /* Bottom nav stays within the app card */
+  .bottom-nav {
+    width: 420px;
+    max-width: 420px;
+    border-radius: 0;
+  }
+
+  /* Sheets and modals anchor within app width */
+  .sheet {
+    width: 420px;
+    max-width: 420px;
+  }
+
+  .modal {
+    max-width: 420px;
+  }
+
+  .header {
+    border-radius: 0;
+  }
+
+  .content {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+}
+
+/* ── Wide Desktop: optional side-panel hint ─────────────── */
+@media (min-width: 1024px) {
+  body::before {
+    right: calc(50% + 340px);
+    width: 600px;
+    height: 600px;
+  }
+}
+
 /* ── Header ────────────────────────────────────────────── */
 .header {
   display: flex;
@@ -989,13 +1073,23 @@ body {
 }
 
 .install-prompt-icon { font-size: 26px; flex-shrink: 0; }
-.install-prompt-text { flex: 1; font-size: 12px; color: var(--text-mid); line-height: 1.5; }
+.install-prompt-text {
+  flex: 1;
+  min-width: 0;          /* ← prevents flex overflow / text squish */
+  font-size: 12px;
+  color: var(--text-mid);
+  line-height: 1.5;
+  overflow: hidden;
+}
 .install-prompt-text strong {
   display: block;
   font-size: 13px;
   color: var(--text-dark);
   margin-bottom: 2px;
   font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── Scrollbar ─────────────────────────────────────────── */
@@ -1003,10 +1097,12 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
 
-/* ── Mobile ────────────────────────────────────────────── */
+/* ── Small Mobile ───────────────────────────────────────── */
 @media (max-width: 360px) {
   .stats-bar { gap: 8px; }
   .stat-number { font-size: 20px; }
   .quick-actions-grid { gap: 8px; }
   .qa-card { padding: 12px 8px 10px; }
+  .header-greeting { font-size: 17px; }
+  .filter-tab { font-size: 11px; padding: 8px 4px; }
 }
