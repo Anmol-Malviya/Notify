@@ -2,22 +2,23 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { subscribeUser, unsubscribeUser, sendNotification } from './actions'
-
-// ── Types ─────────────────────────────────────────────────
-type Priority = 'high' | 'medium' | 'low'
-type Filter = 'all' | 'active' | 'completed'
-type NavTab = 'home' | 'calendar' | 'categories' | 'profile'
-
-interface Todo {
-  id: string
-  title: string
-  description: string
-  priority: Priority
-  dueDate: string
-  dueTime: string
-  completed: boolean
-  createdAt: number
-}
+import {
+  Todo,
+  Category,
+  Priority,
+  Filter,
+  NavTab,
+  Theme,
+  UserProfile,
+  DEFAULT_CATEGORIES,
+  SubTask,
+  SortOption,
+} from './types'
+import { CalendarView } from './components/CalendarView'
+import { CategoriesView } from './components/CategoriesView'
+import { AnalyticsView } from './components/AnalyticsView'
+import { ProfileView } from './components/ProfileView'
+import { SideDrawer } from './components/SideDrawer'
 
 // ── Helpers ───────────────────────────────────────────────
 function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
@@ -93,8 +94,11 @@ function getCountdown(dueDate: string, dueTime: string): string {
 }
 
 const STORAGE_KEY = 'notify-todos-v2'
+const STORAGE_CATS_KEY = 'notify-categories-v1'
+const STORAGE_THEME_KEY = 'notify-theme-v1'
+const STORAGE_PROFILE_KEY = 'notify-user-profile-v1'
 
-// ── SW Scheduling ─────────────────────────────────────────
+// ── Service Worker Scheduling ─────────────────────────────
 async function scheduleNotificationInSW(todo: Todo) {
   if (!('serviceWorker' in navigator) || !todo.dueDate || todo.completed) return
   const timestamp = getDueTimestamp(todo.dueDate, todo.dueTime)
@@ -143,7 +147,7 @@ function FocusCard({ todos }: { todos: Todo[] }) {
   const pct = total === 0 ? 100 : Math.round((completed / total) * 100)
 
   const R = 40
-  const C = 2 * Math.PI * R // ≈ 251.3
+  const C = 2 * Math.PI * R
   const offset = C * (1 - pct / 100)
 
   const msg =
@@ -160,10 +164,9 @@ function FocusCard({ todos }: { todos: Todo[] }) {
 
   return (
     <div className="focus-card" role="region" aria-label="Today's focus">
-      {/* Circular Ring */}
       <div className="focus-ring-wrap">
         <svg width="92" height="92" viewBox="0 0 92 92">
-          <circle cx="46" cy="46" r={R} fill="none" stroke="#EAEAF4" strokeWidth="8" />
+          <circle cx="46" cy="46" r={R} fill="none" stroke="var(--border)" strokeWidth="8" />
           <circle
             cx="46" cy="46" r={R}
             fill="none"
@@ -176,8 +179,8 @@ function FocusCard({ todos }: { todos: Todo[] }) {
           />
           <defs>
             <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#7B61FF" />
-              <stop offset="100%" stopColor="#4FC3F7" />
+              <stop offset="0%" stopColor="var(--accent)" />
+              <stop offset="100%" stopColor="var(--blue)" />
             </linearGradient>
           </defs>
         </svg>
@@ -196,7 +199,15 @@ function FocusCard({ todos }: { todos: Todo[] }) {
 }
 
 // ── Quick Actions ─────────────────────────────────────────
-function QuickActions({ onAddClick }: { onAddClick: () => void }) {
+function QuickActions({
+  onAddClick,
+  onTodayClick,
+  onAnalyticsClick,
+}: {
+  onAddClick: () => void
+  onTodayClick: () => void
+  onAnalyticsClick: () => void
+}) {
   return (
     <>
       <div className="section-title">Quick Actions</div>
@@ -215,7 +226,7 @@ function QuickActions({ onAddClick }: { onAddClick: () => void }) {
           id="qa-today"
           className="qa-card qa-blue"
           type="button"
-          onClick={onAddClick}
+          onClick={onTodayClick}
         >
           <div className="qa-icon-wrap qa-blue-bg">📅</div>
           <div className="qa-title">Today View</div>
@@ -225,6 +236,7 @@ function QuickActions({ onAddClick }: { onAddClick: () => void }) {
           id="qa-analytics"
           className="qa-card qa-green"
           type="button"
+          onClick={onAnalyticsClick}
         >
           <div className="qa-icon-wrap qa-green-bg">📊</div>
           <div className="qa-title">Analytics</div>
@@ -293,7 +305,7 @@ function NotificationSheet({ onClose }: { onClose: () => void }) {
 
         {!isSupported ? (
           <p className="notif-not-supported">
-            Push notifications are not supported in this browser. Use Chrome on Android.
+            Push notifications are not supported in this browser. Use Chrome or supported PWA browser.
           </p>
         ) : (
           <>
@@ -391,19 +403,47 @@ interface ModalProps {
   onClose: () => void
   onSave: (data: Omit<Todo, 'id' | 'createdAt' | 'completed'>) => void
   editing?: Todo | null
+  categories: Category[]
+  initialDueDate?: string
 }
 
-function TodoModal({ onClose, onSave, editing }: ModalProps) {
+function TodoModal({ onClose, onSave, editing, categories, initialDueDate }: ModalProps) {
   const [title, setTitle] = useState(editing?.title ?? '')
   const [description, setDescription] = useState(editing?.description ?? '')
   const [priority, setPriority] = useState<Priority>(editing?.priority ?? 'medium')
-  const [dueDate, setDueDate] = useState(editing?.dueDate ?? '')
+  const [category, setCategory] = useState<string>(editing?.category ?? 'personal')
+  const [dueDate, setDueDate] = useState(editing?.dueDate ?? initialDueDate ?? '')
   const [dueTime, setDueTime] = useState(editing?.dueTime ?? '')
+  const [subtasks, setSubtasks] = useState<SubTask[]>(editing?.subtasks ?? [])
+  const [newSubtaskTitle, setNewSubtaskTitle] = useState('')
+
+  function handleAddSubtask() {
+    if (!newSubtaskTitle.trim()) return
+    const st: SubTask = { id: crypto.randomUUID(), title: newSubtaskTitle.trim(), completed: false }
+    setSubtasks((prev) => [...prev, st])
+    setNewSubtaskTitle('')
+  }
+
+  function handleRemoveSubtask(id: string) {
+    setSubtasks((prev) => prev.filter((s) => s.id !== id))
+  }
+
+  function handleToggleSubtaskInModal(id: string) {
+    setSubtasks((prev) => prev.map((s) => (s.id === id ? { ...s, completed: !s.completed } : s)))
+  }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!title.trim()) return
-    onSave({ title: title.trim(), description: description.trim(), priority, dueDate, dueTime })
+    onSave({
+      title: title.trim(),
+      description: description.trim(),
+      priority,
+      category,
+      dueDate,
+      dueTime,
+      subtasks,
+    })
     onClose()
   }
 
@@ -425,9 +465,32 @@ function TodoModal({ onClose, onSave, editing }: ModalProps) {
           </div>
           <div className="form-group">
             <label className="form-label" htmlFor="todo-desc">Description</label>
-            <textarea id="todo-desc" className="form-textarea" placeholder="Add more details…"
+            <textarea id="todo-desc" className="form-textarea" placeholder="Add details or notes…"
               value={description} onChange={(e) => setDescription(e.target.value)} rows={2} />
           </div>
+
+          <div className="form-group">
+            <label className="form-label">Category</label>
+            <div className="category-select-grid">
+              {categories.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  className={`cat-select-btn ${category === c.id ? 'active' : ''}`}
+                  onClick={() => setCategory(c.id)}
+                  style={{
+                    borderColor: category === c.id ? c.color : 'var(--border)',
+                    background: category === c.id ? c.bgColor : 'var(--bg)',
+                    color: category === c.id ? c.color : 'var(--text-dark)',
+                  }}
+                >
+                  <span>{c.icon}</span>
+                  <span>{c.name}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="form-group">
             <label className="form-label">Priority</label>
             <div className="priority-grid">
@@ -435,29 +498,79 @@ function TodoModal({ onClose, onSave, editing }: ModalProps) {
                 <button key={p} type="button" id={`priority-${p}`}
                   className={`priority-option ${priority === p ? `selected-${p}` : ''}`}
                   onClick={() => setPriority(p)}>
-                  {p === 'high' ? '🔴' : p === 'medium' ? '🟠' : '🟢'}{' '}
-                  {p.charAt(0).toUpperCase() + p.slice(1)}
+                  {p === 'high' ? '🔴 High' : p === 'medium' ? '🟠 Med' : '🟢 Low'}
                 </button>
               ))}
             </div>
           </div>
+
           <div className="form-group">
             <label className="form-label">Due Date & Time ⏰</label>
             <div className="date-time-row">
               <input id="todo-due" className="form-input" type="date"
-                value={dueDate} onChange={(e) => setDueDate(e.target.value)}
-                style={{ colorScheme: 'light' }} />
+                value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
               <input id="todo-time" className="form-input" type="time"
                 value={dueTime} onChange={(e) => setDueTime(e.target.value)}
-                disabled={!dueDate} style={{ colorScheme: 'light' }}
-                title="Set time for push notification" />
+                disabled={!dueDate} title="Set time for push notification" />
             </div>
             {dueDate && dueTime && (
               <p className="time-hint">🔔 Push notification scheduled for {dueTime} on {dueDate}</p>
             )}
           </div>
+
+          {/* Subtasks Builder */}
+          <div className="form-group">
+            <label className="form-label">Sub-tasks / Checklist</label>
+            <div className="subtasks-input-row">
+              <input
+                className="form-input"
+                type="text"
+                placeholder="Add sub-task steps..."
+                value={newSubtaskTitle}
+                onChange={(e) => setNewSubtaskTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleAddSubtask()
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="btn-add-subtask"
+                onClick={handleAddSubtask}
+              >
+                + Add
+              </button>
+            </div>
+
+            {subtasks.length > 0 && (
+              <div className="modal-subtasks-list">
+                {subtasks.map((st) => (
+                  <div key={st.id} className="modal-subtask-item">
+                    <button
+                      type="button"
+                      className={`todo-checkbox ${st.completed ? 'checked' : ''}`}
+                      onClick={() => handleToggleSubtaskInModal(st.id)}
+                    />
+                    <span className={`subtask-title-text ${st.completed ? 'completed' : ''}`}>
+                      {st.title}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn-remove-subtask"
+                      onClick={() => handleRemoveSubtask(st.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <button id="btn-save-todo" type="submit" className="btn-primary">
-            {editing ? 'Save Changes' : '+ Add Task'}
+            {editing ? 'Save Changes' : '+ Create Task'}
           </button>
         </form>
       </div>
@@ -466,12 +579,21 @@ function TodoModal({ onClose, onSave, editing }: ModalProps) {
 }
 
 // ── Todo Card ─────────────────────────────────────────────
-function TodoCard({ todo, onToggle, onDelete, onEdit }: {
-  todo: Todo; onToggle: (id: string) => void
-  onDelete: (id: string) => void; onEdit: (todo: Todo) => void
+function TodoCard({ todo, categories, onToggle, onDelete, onEdit, onToggleSubtask }: {
+  todo: Todo
+  categories: Category[]
+  onToggle: (id: string) => void
+  onDelete: (id: string) => void
+  onEdit: (todo: Todo) => void
+  onToggleSubtask: (todoId: string, subtaskId: string) => void
 }) {
+  const [showSubtasks, setShowSubtasks] = useState(false)
   const overdue = !todo.completed && isOverdue(todo.dueDate, todo.dueTime)
   const hasTimer = !!(todo.dueDate && todo.dueTime && !todo.completed)
+  const cat = categories.find((c) => c.id === (todo.category || 'personal'))
+
+  const subtasks = todo.subtasks || []
+  const completedSubtasks = subtasks.filter((s) => s.completed).length
 
   return (
     <article id={`todo-${todo.id}`}
@@ -482,8 +604,51 @@ function TodoCard({ todo, onToggle, onDelete, onEdit }: {
         onClick={() => onToggle(todo.id)}
         aria-label={todo.completed ? 'Mark incomplete' : 'Mark complete'} type="button" />
       <div className="todo-content" onClick={() => onEdit(todo)}>
-        <div className="todo-title">{todo.title}</div>
+        <div className="todo-title-row">
+          <div className="todo-title">{todo.title}</div>
+          {cat && (
+            <span className="cat-badge" style={{ background: cat.bgColor, color: cat.color }}>
+              {cat.icon} {cat.name}
+            </span>
+          )}
+        </div>
+
         {todo.description && <div className="todo-desc">{todo.description}</div>}
+
+        {/* Subtask Summary */}
+        {subtasks.length > 0 && (
+          <div className="subtasks-summary-box" onClick={(e) => { e.stopPropagation(); setShowSubtasks(!showSubtasks) }}>
+            <div className="subtasks-progress-info">
+              <span>📋 {completedSubtasks}/{subtasks.length} subtasks</span>
+              <span className="toggle-subtask-icon">{showSubtasks ? '▲' : '▼'}</span>
+            </div>
+            <div className="subtasks-progress-track">
+              <div
+                className="subtasks-progress-fill"
+                style={{ width: `${(completedSubtasks / subtasks.length) * 100}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Expanded Subtasks Checklist */}
+        {showSubtasks && subtasks.length > 0 && (
+          <div className="card-subtasks-list" onClick={(e) => e.stopPropagation()}>
+            {subtasks.map((st) => (
+              <div key={st.id} className="card-subtask-item">
+                <button
+                  type="button"
+                  className={`todo-checkbox ${st.completed ? 'checked' : ''}`}
+                  onClick={() => onToggleSubtask(todo.id, st.id)}
+                />
+                <span className={`subtask-label ${st.completed ? 'completed' : ''}`}>
+                  {st.title}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="todo-meta">
           <span className={`priority-badge ${todo.priority}`}>
             {todo.priority === 'high' ? '● HIGH' : todo.priority === 'medium' ? '● MED' : '● LOW'}
@@ -531,7 +696,7 @@ function BottomNav({ onAddClick, activeTab, onTabChange }: {
         </button>
       ))}
       <div className="nav-fab-wrap">
-        <button id="fab-add" className={`nav-fab`} onClick={onAddClick} type="button" aria-label="Add task">
+        <button id="fab-add" className="nav-fab" onClick={onAddClick} type="button" aria-label="Add task">
           +
         </button>
       </div>
@@ -549,42 +714,103 @@ function BottomNav({ onAddClick, activeTab, onTabChange }: {
 // ── Main Page ─────────────────────────────────────────────
 export default function Page() {
   const [todos, setTodos] = useState<Todo[]>([])
+  const [categories, setCategories] = useState<Category[]>(DEFAULT_CATEGORIES)
+  const [theme, setTheme] = useState<Theme>('system')
+  const [userProfile, setUserProfile] = useState<UserProfile>({
+    name: 'Pro User',
+    avatar: '🧑‍💻',
+    title: 'Task Conqueror',
+  })
+
   const [filter, setFilter] = useState<Filter>('all')
+  const [selectedCategory, setSelectedCategory] = useState<string>('all')
+  const [searchQuery, setSearchQuery] = useState<string>('')
+  const [sortBy, setSortBy] = useState<SortOption>('createdAt')
+
   const [showModal, setShowModal] = useState(false)
   const [showNotifSheet, setShowNotifSheet] = useState(false)
+  const [showDrawer, setShowDrawer] = useState(false)
   const [editingTodo, setEditingTodo] = useState<Todo | null>(null)
+  const [initialModalDate, setInitialModalDate] = useState<string>('')
+
   const [mounted, setMounted] = useState(false)
   const [activeTab, setActiveTab] = useState<NavTab>('home')
   const editingRef = useRef<Todo | null>(null)
 
-  // Load + register SW
+  // Initial Load + LocalStorage Sync
   useEffect(() => {
     setMounted(true)
     try {
-      const saved = localStorage.getItem(STORAGE_KEY)
-      if (saved) {
-        const parsed: Todo[] = JSON.parse(saved)
-        setTodos(parsed)
-        if ('serviceWorker' in navigator) {
-          navigator.serviceWorker
-            .register('/sw.js', { scope: '/', updateViaCache: 'none' })
-            .then(async () => {
+      const savedTodos = localStorage.getItem(STORAGE_KEY)
+      if (savedTodos) {
+        const parsed: Todo[] = JSON.parse(savedTodos)
+        setTodos(parsed.map((t) => ({
+          ...t,
+          category: t.category || 'personal',
+          subtasks: t.subtasks || [],
+        })))
+      }
+
+      const savedCats = localStorage.getItem(STORAGE_CATS_KEY)
+      if (savedCats) {
+        setCategories(JSON.parse(savedCats))
+      }
+
+      const savedTheme = localStorage.getItem(STORAGE_THEME_KEY) as Theme
+      if (savedTheme) setTheme(savedTheme)
+
+      const savedProf = localStorage.getItem(STORAGE_PROFILE_KEY)
+      if (savedProf) setUserProfile(JSON.parse(savedProf))
+
+      // Register SW
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker
+          .register('/sw.js', { scope: '/', updateViaCache: 'none' })
+          .then(async () => {
+            if (savedTodos) {
+              const parsed: Todo[] = JSON.parse(savedTodos)
               for (const todo of parsed) {
                 if (!todo.completed && todo.dueDate && todo.dueTime) {
                   const ts = getDueTimestamp(todo.dueDate, todo.dueTime)
                   if (ts > Date.now()) await scheduleNotificationInSW(todo)
                 }
               }
-            }).catch(console.error)
-        }
+            }
+          }).catch(console.error)
       }
     } catch { /* ignore */ }
   }, [])
 
+  // Sync Theme to HTML Root
+  useEffect(() => {
+    if (!mounted) return
+    localStorage.setItem(STORAGE_THEME_KEY, theme)
+    if (theme === 'dark') {
+      document.documentElement.setAttribute('data-theme', 'dark')
+    } else if (theme === 'light') {
+      document.documentElement.setAttribute('data-theme', 'light')
+    } else {
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+      document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light')
+    }
+  }, [theme, mounted])
+
+  // Sync Todos to LocalStorage
   useEffect(() => {
     if (mounted) localStorage.setItem(STORAGE_KEY, JSON.stringify(todos))
   }, [todos, mounted])
 
+  // Sync Categories
+  useEffect(() => {
+    if (mounted) localStorage.setItem(STORAGE_CATS_KEY, JSON.stringify(categories))
+  }, [categories, mounted])
+
+  // Sync Profile
+  useEffect(() => {
+    if (mounted) localStorage.setItem(STORAGE_PROFILE_KEY, JSON.stringify(userProfile))
+  }, [userProfile, mounted])
+
+  // Handlers
   const addTodo = useCallback(async (data: Omit<Todo, 'id' | 'createdAt' | 'completed'>) => {
     const t: Todo = { ...data, id: crypto.randomUUID(), completed: false, createdAt: Date.now() }
     setTodos((prev) => [t, ...prev])
@@ -601,6 +827,7 @@ export default function Page() {
   }, [])
 
   const toggleTodo = useCallback((id: string) => {
+    if ('vibrate' in navigator) navigator.vibrate([25])
     setTodos((prev) => prev.map((t) => {
       if (t.id !== id) return t
       const updated = { ...t, completed: !t.completed }
@@ -610,30 +837,136 @@ export default function Page() {
     }))
   }, [])
 
+  const toggleSubtask = useCallback((todoId: string, subtaskId: string) => {
+    if ('vibrate' in navigator) navigator.vibrate([15])
+    setTodos((prev) => prev.map((t) => {
+      if (t.id !== todoId) return t
+      const updatedSubtasks = (t.subtasks || []).map((st) => (st.id === subtaskId ? { ...st, completed: !st.completed } : st))
+      return { ...t, subtasks: updatedSubtasks }
+    }))
+  }, [])
+
   const deleteTodo = useCallback((id: string) => {
     cancelNotificationInSW(id)
     setTodos((prev) => prev.filter((t) => t.id !== id))
   }, [])
 
-  const openAddModal = () => { editingRef.current = null; setEditingTodo(null); setShowModal(true) }
-  const openEditModal = (todo: Todo) => { editingRef.current = todo; setEditingTodo(todo); setShowModal(true) }
-  const closeModal = () => { setShowModal(false); setEditingTodo(null); editingRef.current = null }
+  const addCategory = useCallback((newCat: Omit<Category, 'id'>) => {
+    const cat: Category = { ...newCat, id: newCat.name.toLowerCase().replace(/\s+/g, '-') }
+    setCategories((prev) => [...prev, cat])
+  }, [])
 
+  const openAddModal = (dateStr?: string) => {
+    editingRef.current = null
+    setEditingTodo(null)
+    setInitialModalDate(dateStr || '')
+    setShowModal(true)
+  }
+
+  const openEditModal = (todo: Todo) => {
+    editingRef.current = todo
+    setEditingTodo(todo)
+    setInitialModalDate('')
+    setShowModal(true)
+  }
+
+  const closeModal = () => {
+    setShowModal(false)
+    setEditingTodo(null)
+    editingRef.current = null
+    setInitialModalDate('')
+  }
+
+  // Quick Action: Today View
+  const handleTodayClick = () => {
+    setActiveTab('home')
+    setFilter('all')
+    const todayStr = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`
+    setSearchQuery(todayStr)
+  }
+
+  // Data Actions
+  const handleExportData = () => {
+    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(todos, null, 2))
+    const downloadAnchor = document.createElement('a')
+    downloadAnchor.setAttribute('href', dataStr)
+    downloadAnchor.setAttribute('download', `notify-backup-${new Date().toISOString().slice(0, 10)}.json`)
+    document.body.appendChild(downloadAnchor)
+    downloadAnchor.click()
+    downloadAnchor.remove()
+  }
+
+  const handleImportData = (importedTodos: Todo[]) => {
+    setTodos(importedTodos)
+  }
+
+  const handleClearCompleted = () => {
+    if (confirm('Clear all completed tasks?')) {
+      setTodos((prev) => prev.filter((t) => !t.completed))
+    }
+  }
+
+  const handleResetData = () => {
+    if (confirm('Are you sure you want to reset all tasks and categories? This cannot be undone.')) {
+      setTodos([])
+      setCategories(DEFAULT_CATEGORIES)
+      localStorage.removeItem(STORAGE_KEY)
+      localStorage.removeItem(STORAGE_CATS_KEY)
+    }
+  }
+
+  // Filtering & Sorting
   const total = todos.length
   const completed = todos.filter((t) => t.completed).length
   const active = total - completed
 
   const filtered = todos.filter((t) => {
-    if (filter === 'active') return !t.completed
-    if (filter === 'completed') return t.completed
+    // Status Filter
+    if (filter === 'active' && t.completed) return false
+    if (filter === 'completed' && !t.completed) return false
+    if (filter === 'overdue' && (t.completed || !isOverdue(t.dueDate, t.dueTime))) return false
+
+    // Category Filter
+    if (selectedCategory !== 'all' && (t.category || 'personal') !== selectedCategory) return false
+
+    // Search Query
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim()
+      const titleMatch = t.title.toLowerCase().includes(q)
+      const descMatch = t.description.toLowerCase().includes(q)
+      const dateMatch = t.dueDate?.includes(q)
+      if (!titleMatch && !descMatch && !dateMatch) return false
+    }
+
     return true
+  }).sort((a, b) => {
+    if (sortBy === 'dueDate') {
+      const tsA = getDueTimestamp(a.dueDate, a.dueTime) || Infinity
+      const tsB = getDueTimestamp(b.dueDate, b.dueTime) || Infinity
+      return tsA - tsB
+    }
+    if (sortBy === 'priority') {
+      const pMap = { high: 1, medium: 2, low: 3 }
+      return pMap[a.priority] - pMap[b.priority]
+    }
+    if (sortBy === 'title') {
+      return a.title.localeCompare(b.title)
+    }
+    return b.createdAt - a.createdAt
   })
 
   return (
     <div className="app">
       {/* Header */}
       <header className="header">
-        <button className="header-icon-btn" aria-label="Menu" type="button">☰</button>
+        <button
+          className="header-icon-btn"
+          aria-label="Menu"
+          type="button"
+          onClick={() => setShowDrawer(true)}
+        >
+          ☰
+        </button>
         <div className="header-center">
           <div className="header-greeting">{mounted ? getGreeting() : 'Welcome 👋'}</div>
           <div className="header-date">{mounted ? formatDate() : ''}</div>
@@ -650,87 +983,213 @@ export default function Page() {
         </button>
       </header>
 
-      {/* Scrollable Content */}
+      {/* Main Content Router */}
       <main className="content">
         {mounted && <InstallPrompt />}
 
-        {/* Stats Bar */}
-        <section className="stats-bar" aria-label="Task statistics">
-          <div className="stat-card">
-            <div className="stat-icon-wrap total-icon">📋</div>
-            <div className="stat-number n-total">{total}</div>
-            <div className="stat-label">Total</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-icon-wrap active-icon">⚡</div>
-            <div className="stat-number n-active">{active}</div>
-            <div className="stat-label">Active</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-icon-wrap done-icon">✅</div>
-            <div className="stat-number n-done">{completed}</div>
-            <div className="stat-label">Done</div>
-          </div>
-        </section>
-
-        {/* Filter Tabs */}
-        <nav className="filter-tabs" aria-label="Filter tasks" role="tablist">
-          {([
-            { id: 'all', label: '⊞ All Tasks' },
-            { id: 'active', label: '⏳ Active' },
-            { id: 'completed', label: '✓ Done' },
-          ] as { id: Filter; label: string }[]).map((f) => (
-            <button key={f.id} id={`filter-${f.id}`} role="tab"
-              aria-selected={filter === f.id}
-              className={`filter-tab ${filter === f.id ? 'active' : ''}`}
-              onClick={() => setFilter(f.id)}>
-              {f.label}
-            </button>
-          ))}
-        </nav>
-
-        {/* Todo List */}
-        <section aria-label="Task list" aria-live="polite">
-          {filtered.length === 0 ? (
-            <div className="empty-state" role="status">
-              <div className="empty-icon">
-                {filter === 'completed' ? '🏆' : filter === 'active' ? '🎯' : '🌟'}
+        {activeTab === 'home' && (
+          <>
+            {/* Stats Bar */}
+            <section className="stats-bar" aria-label="Task statistics">
+              <div className="stat-card" onClick={() => setFilter('all')}>
+                <div className="stat-icon-wrap total-icon">📋</div>
+                <div className="stat-number n-total">{total}</div>
+                <div className="stat-label">Total</div>
               </div>
-              <h3>
-                {filter === 'completed' ? 'No completed tasks yet'
-                  : filter === 'active' ? 'All caught up!' : 'No tasks yet'}
-              </h3>
-              <p>
-                {filter === 'completed' ? 'Complete tasks to see them here'
-                  : 'Tap + below to add your first task'}
-              </p>
-            </div>
-          ) : (
-            <div className="todos-list" role="list">
-              {filtered.map((todo) => (
-                <TodoCard key={todo.id} todo={todo}
-                  onToggle={toggleTodo} onDelete={deleteTodo} onEdit={openEditModal} />
-              ))}
-            </div>
-          )}
-        </section>
+              <div className="stat-card" onClick={() => setFilter('active')}>
+                <div className="stat-icon-wrap active-icon">⚡</div>
+                <div className="stat-number n-active">{active}</div>
+                <div className="stat-label">Active</div>
+              </div>
+              <div className="stat-card" onClick={() => setFilter('completed')}>
+                <div className="stat-icon-wrap done-icon">✅</div>
+                <div className="stat-number n-done">{completed}</div>
+                <div className="stat-label">Done</div>
+              </div>
+            </section>
 
-        {/* Focus Ring Card */}
-        <FocusCard todos={todos} />
+            {/* Search & Filter Bar */}
+            <div className="search-filter-section">
+              <div className="search-input-wrap">
+                <span className="search-icon">🔍</span>
+                <input
+                  type="text"
+                  className="search-input"
+                  placeholder="Search tasks or date..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+                {searchQuery && (
+                  <button className="search-clear-btn" onClick={() => setSearchQuery('')}>×</button>
+                )}
+              </div>
 
-        {/* Quick Actions */}
-        <QuickActions onAddClick={openAddModal} />
+              {/* Category Pills */}
+              <div className="cat-pills-row">
+                <button
+                  type="button"
+                  className={`cat-pill ${selectedCategory === 'all' ? 'active' : ''}`}
+                  onClick={() => setSelectedCategory('all')}
+                >
+                  All Categories
+                </button>
+                {categories.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className={`cat-pill ${selectedCategory === c.id ? 'active' : ''}`}
+                    onClick={() => setSelectedCategory(c.id)}
+                    style={{
+                      borderColor: selectedCategory === c.id ? c.color : 'var(--border)',
+                      background: selectedCategory === c.id ? c.bgColor : 'var(--card)',
+                      color: selectedCategory === c.id ? c.color : 'var(--text-mid)',
+                    }}
+                  >
+                    <span>{c.icon}</span>
+                    <span>{c.name}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="filter-sort-row">
+                {/* Status Filter Tabs */}
+                <nav className="filter-tabs" aria-label="Filter tasks">
+                  {([
+                    { id: 'all', label: 'All' },
+                    { id: 'active', label: 'Active' },
+                    { id: 'completed', label: 'Done' },
+                    { id: 'overdue', label: 'Overdue' },
+                  ] as { id: Filter; label: string }[]).map((f) => (
+                    <button key={f.id} id={`filter-${f.id}`}
+                      className={`filter-tab ${filter === f.id ? 'active' : ''}`}
+                      onClick={() => setFilter(f.id)}>
+                      {f.label}
+                    </button>
+                  ))}
+                </nav>
+
+                {/* Sort Selector */}
+                <select
+                  className="sort-dropdown"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as SortOption)}
+                >
+                  <option value="createdAt">Sort: Latest</option>
+                  <option value="dueDate">Sort: Due Date</option>
+                  <option value="priority">Sort: Priority</option>
+                  <option value="title">Sort: Title</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Todo List */}
+            <section aria-label="Task list" aria-live="polite">
+              {filtered.length === 0 ? (
+                <div className="empty-state" role="status">
+                  <div className="empty-icon">
+                    {filter === 'completed' ? '🏆' : filter === 'active' ? '🎯' : '🌟'}
+                  </div>
+                  <h3>
+                    {filter === 'completed' ? 'No completed tasks yet'
+                      : filter === 'active' ? 'All caught up!'
+                      : searchQuery ? 'No matching tasks found' : 'No tasks yet'}
+                  </h3>
+                  <p>
+                    {searchQuery ? 'Try clearing your search query or filters' : 'Tap + below to add your first task'}
+                  </p>
+                </div>
+              ) : (
+                <div className="todos-list" role="list">
+                  {filtered.map((todo) => (
+                    <TodoCard key={todo.id} todo={todo} categories={categories}
+                      onToggle={toggleTodo} onDelete={deleteTodo} onEdit={openEditModal} onToggleSubtask={toggleSubtask} />
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {/* Focus Ring Card */}
+            <FocusCard todos={todos} />
+
+            {/* Quick Actions */}
+            <QuickActions
+              onAddClick={() => openAddModal()}
+              onTodayClick={handleTodayClick}
+              onAnalyticsClick={() => setActiveTab('analytics')}
+            />
+          </>
+        )}
+
+        {activeTab === 'calendar' && (
+          <CalendarView
+            todos={todos}
+            categories={categories}
+            onToggleTodo={toggleTodo}
+            onDeleteTodo={deleteTodo}
+            onEditTodo={openEditModal}
+            onAddTaskForDate={(dateStr) => openAddModal(dateStr)}
+          />
+        )}
+
+        {activeTab === 'categories' && (
+          <CategoriesView
+            categories={categories}
+            todos={todos}
+            onSelectCategory={(catId) => {
+              setSelectedCategory(catId)
+              setActiveTab('home')
+            }}
+            onAddCategory={addCategory}
+          />
+        )}
+
+        {activeTab === 'analytics' && (
+          <AnalyticsView todos={todos} categories={categories} />
+        )}
+
+        {activeTab === 'profile' && (
+          <ProfileView
+            userProfile={userProfile}
+            theme={theme}
+            onUpdateProfile={setUserProfile}
+            onChangeTheme={setTheme}
+            onOpenNotifSheet={() => setShowNotifSheet(true)}
+            todos={todos}
+            onExportData={handleExportData}
+            onImportData={handleImportData}
+            onClearCompleted={handleClearCompleted}
+            onResetData={handleResetData}
+          />
+        )}
       </main>
 
+      {/* Side Drawer Menu */}
+      <SideDrawer
+        isOpen={showDrawer}
+        onClose={() => setShowDrawer(false)}
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+        userProfile={userProfile}
+        theme={theme}
+        onChangeTheme={setTheme}
+        onOpenNotifSheet={() => setShowNotifSheet(true)}
+      />
+
       {/* Bottom Navigation */}
-      <BottomNav onAddClick={openAddModal} activeTab={activeTab} onTabChange={setActiveTab} />
+      <BottomNav onAddClick={() => openAddModal()} activeTab={activeTab} onTabChange={setActiveTab} />
 
       {/* Notification Sheet */}
       {showNotifSheet && mounted && <NotificationSheet onClose={() => setShowNotifSheet(false)} />}
 
       {/* Todo Modal */}
       {showModal && (
-        <TodoModal onClose={closeModal} onSave={editingTodo ? editTodo : addTodo} editing={editingTodo} />
+        <TodoModal
+          onClose={closeModal}
+          onSave={editingTodo ? editTodo : addTodo}
+          editing={editingTodo}
+          categories={categories}
+          initialDueDate={initialModalDate}
+        />
       )}
     </div>
   )
