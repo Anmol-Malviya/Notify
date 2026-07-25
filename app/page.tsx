@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { subscribeUser, unsubscribeUser, sendNotification } from './actions'
 
 // ── Types ─────────────────────────────────────────────────
@@ -13,6 +13,7 @@ interface Todo {
   description: string
   priority: Priority
   dueDate: string
+  dueTime: string   // ← NEW: "HH:mm" format
   completed: boolean
   createdAt: number
 }
@@ -46,27 +47,122 @@ function formatDate(): string {
   })
 }
 
-function isOverdue(dueDate: string): boolean {
+/** Returns true if the task's due datetime has passed */
+function isOverdue(dueDate: string, dueTime: string): boolean {
   if (!dueDate) return false
-  return new Date(dueDate) < new Date() && dueDate !== ''
+  const dt = dueTime ? new Date(`${dueDate}T${dueTime}`) : (() => {
+    const d = new Date(dueDate); d.setHours(23, 59, 59); return d
+  })()
+  return dt < new Date()
 }
 
-function formatDueDate(dueDate: string): string {
-  if (!dueDate) return ''
+/** Returns the due timestamp (ms) for a todo */
+function getDueTimestamp(dueDate: string, dueTime: string): number {
+  if (!dueDate) return 0
+  if (dueTime) return new Date(`${dueDate}T${dueTime}`).getTime()
   const d = new Date(dueDate)
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const target = new Date(dueDate)
-  target.setHours(0, 0, 0, 0)
+  d.setHours(23, 59, 0, 0)
+  return d.getTime()
+}
+
+/** Formats date part relative to today */
+function formatDatePart(dueDate: string): string {
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const target = new Date(dueDate); target.setHours(0, 0, 0, 0)
   const diffDays = Math.round((target.getTime() - today.getTime()) / 86400000)
   if (diffDays === 0) return 'Today'
   if (diffDays === 1) return 'Tomorrow'
   if (diffDays === -1) return 'Yesterday'
   if (diffDays < 0) return `${Math.abs(diffDays)}d overdue`
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  return new Date(dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
-const STORAGE_KEY = 'notify-todos'
+/** Formats "Today at 3:30 PM" or "Jul 28" */
+function formatDueDateTime(dueDate: string, dueTime: string): string {
+  if (!dueDate) return ''
+  const datePart = formatDatePart(dueDate)
+  if (!dueTime) return datePart
+  const [h, m] = dueTime.split(':').map(Number)
+  const period = h >= 12 ? 'PM' : 'AM'
+  const h12 = h % 12 || 12
+  return `${datePart} at ${h12}:${String(m).padStart(2, '0')} ${period}`
+}
+
+/** Human-readable countdown: "2h 30m", "45m", "⏰ Time up!" */
+function getCountdown(dueDate: string, dueTime: string): string {
+  const ts = getDueTimestamp(dueDate, dueTime)
+  if (!ts) return ''
+  const diff = ts - Date.now()
+  if (diff <= 0) return '⏰ Time up!'
+  const totalMins = Math.floor(diff / 60000)
+  const days = Math.floor(totalMins / 1440)
+  const hours = Math.floor((totalMins % 1440) / 60)
+  const mins = totalMins % 60
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${mins}m`
+  return `${mins}m`
+}
+
+const STORAGE_KEY = 'notify-todos-v2'
+
+// ── Service Worker Scheduling ─────────────────────────────
+async function scheduleNotificationInSW(todo: Todo) {
+  if (!('serviceWorker' in navigator)) return
+  if (!todo.dueDate || todo.completed) return
+
+  const timestamp = getDueTimestamp(todo.dueDate, todo.dueTime)
+  if (!timestamp || timestamp <= Date.now()) return
+
+  try {
+    const reg = await navigator.serviceWorker.ready
+    reg.active?.postMessage({
+      type: 'SCHEDULE_NOTIFICATION',
+      id: todo.id,
+      title: `⏰ Task Due: ${todo.title}`,
+      body: todo.dueTime
+        ? `"${todo.title}" is due now!`
+        : `"${todo.title}" is due today!`,
+      timestamp,
+    })
+  } catch (err) {
+    console.error('SW schedule failed:', err)
+  }
+}
+
+async function cancelNotificationInSW(id: string) {
+  if (!('serviceWorker' in navigator)) return
+  try {
+    const reg = await navigator.serviceWorker.ready
+    reg.active?.postMessage({ type: 'CANCEL_NOTIFICATION', id })
+  } catch {
+    // ignore
+  }
+}
+
+// ── Live Countdown Badge ──────────────────────────────────
+function CountdownBadge({ dueDate, dueTime }: { dueDate: string; dueTime: string }) {
+  const [label, setLabel] = useState(() => getCountdown(dueDate, dueTime))
+
+  useEffect(() => {
+    setLabel(getCountdown(dueDate, dueTime))
+    const interval = setInterval(() => {
+      setLabel(getCountdown(dueDate, dueTime))
+    }, 30000) // refresh every 30s
+    return () => clearInterval(interval)
+  }, [dueDate, dueTime])
+
+  if (!label) return null
+
+  const isUp = label === '⏰ Time up!'
+  return (
+    <span
+      className={`countdown-badge ${isUp ? 'time-up' : ''}`}
+      aria-label={`Time remaining: ${label}`}
+    >
+      {isUp ? label : `⏱ ${label}`}
+    </span>
+  )
+}
 
 // ── Push Notification Manager ─────────────────────────────
 function PushNotificationManager() {
@@ -160,21 +256,29 @@ function PushNotificationManager() {
       </div>
       <div className="notif-actions">
         {!subscription ? (
-          <button
-            id="btn-subscribe"
-            className="btn-notif subscribe"
-            onClick={subscribeToPush}
-            disabled={isBusy}
-          >
-            🔔 Enable Push Notifications
-          </button>
+          <>
+            <p className="notif-hint">
+              Enable push notifications to receive alerts when your task timers expire — even when the app is closed.
+            </p>
+            <button
+              id="btn-subscribe"
+              className="btn-notif subscribe"
+              onClick={subscribeToPush}
+              disabled={isBusy}
+            >
+              🔔 Enable Push Notifications
+            </button>
+          </>
         ) : (
           <>
+            <p className="notif-hint">
+              ✅ Timers are active! You&apos;ll receive a notification when any task&apos;s due time arrives.
+            </p>
             <input
               id="notif-message-input"
               className="form-input"
               type="text"
-              placeholder="Enter notification message…"
+              placeholder="Send a test notification…"
               value={lastMsg}
               onChange={(e) => setLastMsg(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && sendTest()}
@@ -196,7 +300,7 @@ function PushNotificationManager() {
                 onClick={unsubscribeFromPush}
                 disabled={isBusy}
               >
-                🔕 Unsubscribe
+                🔕 Off
               </button>
             </div>
           </>
@@ -225,7 +329,6 @@ function InstallPrompt() {
     }
     window.addEventListener('beforeinstallprompt', handler)
 
-    // Show on iOS even without beforeinstallprompt
     if (/iPad|iPhone|iPod/.test(navigator.userAgent)) {
       setShow(true)
     }
@@ -278,11 +381,12 @@ function TodoModal({ onClose, onSave, editing }: TodoModalProps) {
   const [description, setDescription] = useState(editing?.description ?? '')
   const [priority, setPriority] = useState<Priority>(editing?.priority ?? 'medium')
   const [dueDate, setDueDate] = useState(editing?.dueDate ?? '')
+  const [dueTime, setDueTime] = useState(editing?.dueTime ?? '')
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!title.trim()) return
-    onSave({ title: title.trim(), description: description.trim(), priority, dueDate })
+    onSave({ title: title.trim(), description: description.trim(), priority, dueDate, dueTime })
     onClose()
   }
 
@@ -328,7 +432,7 @@ function TodoModal({ onClose, onSave, editing }: TodoModalProps) {
               placeholder="Add more details…"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              rows={3}
+              rows={2}
             />
           </div>
           <div className="form-group">
@@ -348,18 +452,37 @@ function TodoModal({ onClose, onSave, editing }: TodoModalProps) {
               ))}
             </div>
           </div>
+
+          {/* Due Date + Time — side by side */}
           <div className="form-group">
-            <label className="form-label" htmlFor="todo-due">Due Date</label>
-            <input
-              id="todo-due"
-              className="form-input"
-              type="date"
-              value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
-              min={new Date().toISOString().split('T')[0]}
-              style={{ colorScheme: 'dark' }}
-            />
+            <label className="form-label">Due Date & Time ⏰</label>
+            <div className="date-time-row">
+              <input
+                id="todo-due"
+                className="form-input"
+                type="date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+                style={{ colorScheme: 'dark', flex: 1 }}
+              />
+              <input
+                id="todo-time"
+                className="form-input"
+                type="time"
+                value={dueTime}
+                onChange={(e) => setDueTime(e.target.value)}
+                disabled={!dueDate}
+                style={{ colorScheme: 'dark', flex: 1 }}
+                title="Set a time to receive a push notification reminder"
+              />
+            </div>
+            {dueDate && dueTime && (
+              <p className="time-hint">
+                🔔 You&apos;ll get a push notification at {dueTime} on {dueDate}
+              </p>
+            )}
           </div>
+
           <button id="btn-save-todo" type="submit" className="btn-primary">
             {editing ? 'Save Changes' : '+ Add Task'}
           </button>
@@ -378,12 +501,13 @@ interface TodoCardProps {
 }
 
 function TodoCard({ todo, onToggle, onDelete, onEdit }: TodoCardProps) {
-  const overdue = !todo.completed && isOverdue(todo.dueDate)
+  const overdue = !todo.completed && isOverdue(todo.dueDate, todo.dueTime)
+  const hasTimer = !!(todo.dueDate && todo.dueTime && !todo.completed)
 
   return (
     <article
       id={`todo-${todo.id}`}
-      className={`todo-card priority-${todo.priority} ${todo.completed ? 'completed' : ''}`}
+      className={`todo-card priority-${todo.priority} ${todo.completed ? 'completed' : ''} ${overdue ? 'overdue-card' : ''}`}
       aria-label={`Task: ${todo.title}`}
     >
       <button
@@ -405,10 +529,12 @@ function TodoCard({ todo, onToggle, onDelete, onEdit }: TodoCardProps) {
           </span>
           {todo.dueDate && (
             <span className={`due-date ${overdue ? 'overdue' : ''}`}>
-              📅 {formatDueDate(todo.dueDate)}
+              📅 {formatDueDateTime(todo.dueDate, todo.dueTime)}
               {overdue ? ' ⚠️' : ''}
             </span>
           )}
+          {/* Live countdown badge */}
+          {hasTimer && <CountdownBadge dueDate={todo.dueDate} dueTime={todo.dueTime} />}
         </div>
       </div>
       <div className="todo-actions" role="group" aria-label="Task actions">
@@ -442,13 +568,34 @@ export default function Page() {
   const [showModal, setShowModal] = useState(false)
   const [editingTodo, setEditingTodo] = useState<Todo | null>(null)
   const [mounted, setMounted] = useState(false)
+  // Ref to track the "previous" todo for cancel-on-edit
+  const editingTodoRef = useRef<Todo | null>(null)
 
-  // Load from localStorage
+  // Load from localStorage & register SW
   useEffect(() => {
     setMounted(true)
     try {
       const saved = localStorage.getItem(STORAGE_KEY)
-      if (saved) setTodos(JSON.parse(saved))
+      if (saved) {
+        const parsed: Todo[] = JSON.parse(saved)
+        setTodos(parsed)
+        // Re-schedule all pending notifications on page load
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker
+            .register('/sw.js', { scope: '/', updateViaCache: 'none' })
+            .then(async () => {
+              for (const todo of parsed) {
+                if (!todo.completed && todo.dueDate && todo.dueTime) {
+                  const ts = getDueTimestamp(todo.dueDate, todo.dueTime)
+                  if (ts > Date.now()) {
+                    await scheduleNotificationInSW(todo)
+                  }
+                }
+              }
+            })
+            .catch(console.error)
+        }
+      }
     } catch {
       // ignore
     }
@@ -462,46 +609,67 @@ export default function Page() {
   }, [todos, mounted])
 
   const addTodo = useCallback(
-    (data: Omit<Todo, 'id' | 'createdAt' | 'completed'>) => {
-      setTodos((prev) => [
-        {
-          ...data,
-          id: crypto.randomUUID(),
-          completed: false,
-          createdAt: Date.now(),
-        },
-        ...prev,
-      ])
+    async (data: Omit<Todo, 'id' | 'createdAt' | 'completed'>) => {
+      const newTodo: Todo = {
+        ...data,
+        id: crypto.randomUUID(),
+        completed: false,
+        createdAt: Date.now(),
+      }
+      setTodos((prev) => [newTodo, ...prev])
+      // Schedule notification if due time is set
+      await scheduleNotificationInSW(newTodo)
     },
     []
   )
 
   const editTodo = useCallback(
-    (data: Omit<Todo, 'id' | 'createdAt' | 'completed'>) => {
-      if (!editingTodo) return
-      setTodos((prev) =>
-        prev.map((t) => (t.id === editingTodo.id ? { ...t, ...data } : t))
-      )
+    async (data: Omit<Todo, 'id' | 'createdAt' | 'completed'>) => {
+      const prev = editingTodoRef.current
+      if (!prev) return
+
+      // Cancel old timer
+      await cancelNotificationInSW(prev.id)
+
+      const updated: Todo = { ...prev, ...data }
+      setTodos((todos) => todos.map((t) => (t.id === prev.id ? updated : t)))
+
+      // Schedule new timer
+      await scheduleNotificationInSW(updated)
     },
-    [editingTodo]
+    []
   )
 
   const toggleTodo = useCallback((id: string) => {
     setTodos((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t))
+      prev.map((t) => {
+        if (t.id !== id) return t
+        const updated = { ...t, completed: !t.completed }
+        if (updated.completed) {
+          // Cancel timer when marking done
+          cancelNotificationInSW(id)
+        } else {
+          // Re-schedule when marking undone
+          scheduleNotificationInSW(updated)
+        }
+        return updated
+      })
     )
   }, [])
 
   const deleteTodo = useCallback((id: string) => {
+    cancelNotificationInSW(id)
     setTodos((prev) => prev.filter((t) => t.id !== id))
   }, [])
 
   const openAddModal = () => {
+    editingTodoRef.current = null
     setEditingTodo(null)
     setShowModal(true)
   }
 
   const openEditModal = (todo: Todo) => {
+    editingTodoRef.current = todo
     setEditingTodo(todo)
     setShowModal(true)
   }
@@ -509,6 +677,7 @@ export default function Page() {
   const closeModal = () => {
     setShowModal(false)
     setEditingTodo(null)
+    editingTodoRef.current = null
   }
 
   // Stats

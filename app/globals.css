@@ -309,6 +309,11 @@ body::after {
   box-shadow: var(--shadow-card);
 }
 
+.todo-card.overdue-card {
+  border-color: rgba(248, 113, 113, 0.25);
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.1) inset;
+}
+
 .todo-card.completed {
   opacity: 0.55;
 }
@@ -424,6 +429,39 @@ body::after {
 
 .due-date.overdue {
   color: var(--priority-high);
+}
+
+/* ── Countdown Badge ─────────────────────────────────────── */
+.countdown-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: rgba(139, 92, 246, 0.12);
+  color: var(--accent-light);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+  letter-spacing: 0.02em;
+  animation: pulse-ring 2s ease-in-out infinite;
+}
+
+.countdown-badge.time-up {
+  background: var(--priority-high-bg);
+  color: var(--priority-high);
+  border-color: rgba(248, 113, 113, 0.3);
+  animation: shake 0.5s ease-in-out 3;
+}
+
+@keyframes pulse-ring {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.2); }
+  50% { box-shadow: 0 0 0 3px rgba(139, 92, 246, 0); }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
 }
 
 .todo-actions {
@@ -676,6 +714,34 @@ body::after {
   border-color: var(--priority-low);
   background: var(--priority-low-bg);
   color: var(--priority-low);
+}
+
+/* ── Date + Time Row ─────────────────────────────────────── */
+.date-time-row {
+  display: flex;
+  gap: 8px;
+}
+
+.date-time-row .form-input {
+  min-width: 0;
+}
+
+.time-hint {
+  font-size: 12px;
+  color: var(--accent-light);
+  margin-top: 6px;
+  line-height: 1.4;
+  padding: 8px 12px;
+  background: rgba(139, 92, 246, 0.08);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(139, 92, 246, 0.15);
+}
+
+.notif-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-bottom: 8px;
 }
 
 .btn-primary {

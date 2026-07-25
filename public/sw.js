@@ -1,5 +1,79 @@
-// Notify PWA Service Worker
+// Notify PWA Service Worker — v2 (with scheduled timer notifications)
 
+// ── Scheduled Notifications Map ───────────────────────────
+// Stores { timeoutId } keyed by todo id
+const scheduledNotifications = new Map()
+
+// ── Message Handler (from page) ───────────────────────────
+self.addEventListener('message', function (event) {
+  const { type } = event.data || {}
+
+  if (type === 'SCHEDULE_NOTIFICATION') {
+    const { id, title, body, timestamp } = event.data
+    const delay = timestamp - Date.now()
+
+    // Cancel any existing timer for this todo
+    if (scheduledNotifications.has(id)) {
+      clearTimeout(scheduledNotifications.get(id))
+      scheduledNotifications.delete(id)
+    }
+
+    if (delay <= 0) {
+      // Already past due — fire immediately
+      self.registration.showNotification(title, {
+        body,
+        icon: '/icon-192x192.png',
+        badge: '/icon-192x192.png',
+        vibrate: [200, 100, 200, 100, 200],
+        tag: 'todo-' + id,
+        renotify: true,
+        data: { url: '/', todoId: id },
+        actions: [
+          { action: 'open', title: '📋 Open App' },
+          { action: 'dismiss', title: 'Dismiss' },
+        ],
+      })
+      return
+    }
+
+    // Schedule for the future
+    const timeoutId = setTimeout(function () {
+      self.registration.showNotification(title, {
+        body,
+        icon: '/icon-192x192.png',
+        badge: '/icon-192x192.png',
+        vibrate: [200, 100, 200, 100, 200],
+        tag: 'todo-' + id,
+        renotify: true,
+        data: { url: '/', todoId: id },
+        actions: [
+          { action: 'open', title: '📋 Open App' },
+          { action: 'dismiss', title: 'Dismiss' },
+        ],
+      })
+      scheduledNotifications.delete(id)
+    }, delay)
+
+    scheduledNotifications.set(id, timeoutId)
+  }
+
+  if (type === 'CANCEL_NOTIFICATION') {
+    const { id } = event.data
+    if (scheduledNotifications.has(id)) {
+      clearTimeout(scheduledNotifications.get(id))
+      scheduledNotifications.delete(id)
+    }
+  }
+
+  if (type === 'CANCEL_ALL_NOTIFICATIONS') {
+    scheduledNotifications.forEach(function (timeoutId) {
+      clearTimeout(timeoutId)
+    })
+    scheduledNotifications.clear()
+  }
+})
+
+// ── Push Event (from VAPID / server) ─────────────────────
 self.addEventListener('push', function (event) {
   if (event.data) {
     const data = event.data.json()
@@ -13,7 +87,7 @@ self.addEventListener('push', function (event) {
         url: data.url || '/',
       },
       actions: [
-        { action: 'open', title: 'Open App' },
+        { action: 'open', title: '📋 Open App' },
         { action: 'dismiss', title: 'Dismiss' },
       ],
     }
@@ -21,6 +95,7 @@ self.addEventListener('push', function (event) {
   }
 })
 
+// ── Notification Click ────────────────────────────────────
 self.addEventListener('notificationclick', function (event) {
   event.notification.close()
   if (event.action === 'dismiss') return
@@ -42,8 +117,8 @@ self.addEventListener('notificationclick', function (event) {
   )
 })
 
-// Cache static assets
-const CACHE_NAME = 'notify-v1'
+// ── Cache Static Assets ───────────────────────────────────
+const CACHE_NAME = 'notify-v2'
 const urlsToCache = ['/', '/icon-192x192.png', '/icon-512x512.png']
 
 self.addEventListener('install', function (event) {
@@ -69,7 +144,6 @@ self.addEventListener('activate', function (event) {
 })
 
 self.addEventListener('fetch', function (event) {
-  // Only cache GET requests
   if (event.request.method !== 'GET') return
   event.respondWith(
     caches.match(event.request).then(function (response) {
